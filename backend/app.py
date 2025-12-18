@@ -19,19 +19,26 @@ from database import get_connection
 
 from flask_cors import CORS
 
-# --- 1. CẤU HÌNH HỆ THỐNG ---
-app = Flask(__name__)
-app.secret_key = 'sieubaomat_anh_trung_dep_trai' 
-np.int = int 
-
-# TẠO THƯ MỤC LƯU VECTOR (Nếu chưa có)
-VECTOR_DIR = "face_vectors"
-# Lấy đường dẫn tuyệt đối để tránh lỗi khi chạy từ thư mục khác
+# --- 1. CẤU HÌNH HỆ THỐNG & ĐƯỜNG DẪN ---
+# Lấy đường dẫn tuyệt đối của file hiện tại
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-ABS_VECTOR_DIR = os.path.join(BASE_DIR, VECTOR_DIR)
 
+# Cấu hình thư mục lưu Vector khuôn mặt
+VECTOR_DIR = "face_vectors"
+ABS_VECTOR_DIR = os.path.join(BASE_DIR, VECTOR_DIR)
 if not os.path.exists(ABS_VECTOR_DIR):
     os.makedirs(ABS_VECTOR_DIR)
+
+# Cấu hình thư mục lưu ảnh người lạ (QUAN TRỌNG: Phải nằm trong static để React xem được)
+STRANGER_DIR = "static/strangers"
+ABS_STRANGER_DIR = os.path.join(BASE_DIR, STRANGER_DIR)
+if not os.path.exists(ABS_STRANGER_DIR):
+    os.makedirs(ABS_STRANGER_DIR)
+
+# Khởi tạo Flask với thư mục static để phục vụ ảnh
+app = Flask(__name__, static_folder='static') 
+app.secret_key = 'sieubaomat_anh_trung_dep_trai' 
+np.int = int 
 
 CORS(
     app,
@@ -43,7 +50,7 @@ CORS(
     supports_credentials=True
 )
 
-SYSTEM_SETTINGS = { "threshold": 0.50, "scan_duration": 3.0 } # Giữ ngưỡng 0.50
+SYSTEM_SETTINGS = { "threshold": 0.50, "scan_duration": 3.0 } 
 
 USERS = {
     "admin": {
@@ -90,7 +97,7 @@ def save_log_to_file(entry):
     with open(LOG_FILE, 'w', encoding='utf-8') as f:
         json.dump(logs, f, ensure_ascii=False, indent=2)
 
-# --- 2. XỬ LÝ AI & DATABASE (PHIÊN BẢN ĐỌC FILE TXT CHUẨN HÓA) ---
+# --- 2. XỬ LÝ AI & DATABASE ---
 class FaceDatabase:
     def __init__(self):
         self.known_embeddings = [] 
@@ -121,14 +128,11 @@ class FaceDatabase:
             for row in rows:
                 name = row['ho_ten']
                 dept = row['ten_phong'] or "Chưa phân loại"
-                # vector_data trong DB lưu đường dẫn dạng face_vectors/filename.txt
                 db_path = row['vector_data'] 
                 
                 if not db_path: continue
 
                 # Xử lý đường dẫn tương thích mọi hệ điều hành
-                # Nếu DB lưu kiểu Windows (\\) mà chạy Linux (/), hoặc ngược lại
-                # Ta chỉ lấy tên file cuối cùng rồi ghép với thư mục hiện tại
                 filename = os.path.basename(db_path)
                 file_path = os.path.join(ABS_VECTOR_DIR, filename)
                 
@@ -154,7 +158,8 @@ class FaceDatabase:
                         print(f"⚠️ Lỗi đọc file {file_path}: {err}")
                 else:
                     # File trong DB có nhưng trên ổ cứng không thấy
-                    print(f"⚠️ Cảnh báo: File {file_path} không tồn tại (Dữ liệu DB lệch với ổ cứng)")
+                    # print(f"⚠️ Cảnh báo: File {file_path} không tồn tại")
+                    pass
             
             print(f"✅ Đã tải thành công {count} khuôn mặt vào RAM!")
             cursor.close()
@@ -198,6 +203,7 @@ face_app.prepare(ctx_id=0, det_size=(640, 640))
 db = FaceDatabase()
 print("System: Sẵn sàng!")
 
+# --- CÁC HÀM TIỆN ÍCH ---
 def put_text_utf8(image, text, position, color=(0, 255, 0), font_scale=1):
     img_pil = Image.fromarray(cv2.cvtColor(image, cv2.COLOR_BGR2RGB))
     draw = ImageDraw.Draw(img_pil)
@@ -214,10 +220,26 @@ def create_placeholder_frame(text="MẤT TÍN HIỆU", width=640, height=360):
     frame = put_text_utf8(frame, text, (width//2 - 100, height//2 - 15), (0, 0, 255), 1.5)
     return frame
 
+def calculate_iou(boxA, boxB):
+    xA = max(boxA[0], boxB[0])
+    yA = max(boxA[1], boxB[1])
+    xB = min(boxA[2], boxB[2])
+    yB = min(boxA[3], boxB[3])
+    interArea = max(0, xB - xA) * max(0, yB - yA)
+    boxAArea = (boxA[2] - boxA[0]) * (boxA[3] - boxA[1])
+    boxBArea = (boxB[2] - boxB[0]) * (boxB[3] - boxB[1])
+    unionArea = boxAArea + boxBArea - interArea
+    return interArea / float(unionArea) if unionArea > 0 else 0
+
+# --- THREAD CAMERA ---
 def camera_thread():
     global global_frame_0, global_frame_1
-    cap0 = cv2.VideoCapture(0)
+    cap0 = cv2.VideoCapture(0) # Mặc định là 0, nếu không lên hình thì đổi thành 1
     cap1 = cv2.VideoCapture(1)
+    
+    if not cap0.isOpened():
+        print("❌ LỖI: Không thể mở Camera 0!")
+        
     while True:
         ret0, frame0 = cap0.read()
         ret1, frame1 = cap1.read()
@@ -232,23 +254,32 @@ t.start()
 
 trackers_state = {0: [], 1: []}
 
-def calculate_iou(boxA, boxB):
-    xA = max(boxA[0], boxB[0])
-    yA = max(boxA[1], boxB[1])
-    xB = min(boxA[2], boxB[2])
-    yB = min(boxA[3], boxB[3])
-    interArea = max(0, xB - xA) * max(0, yB - yA)
-    boxAArea = (boxA[2] - boxA[0]) * (boxA[3] - boxA[1])
-    boxBArea = (boxB[2] - boxB[0]) * (boxB[3] - boxB[1])
-    unionArea = boxAArea + boxBArea - interArea
-    return interArea / float(unionArea) if unionArea > 0 else 0
-
-def add_log(name, cam_id, score):
+# --- HÀM GHI LOG & LƯU ẢNH (ĐÃ CẬP NHẬT) ---
+def add_log(name, cam_id, score, face_img=None):
     global activity_logs
-    now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    time_str = datetime.now().strftime("%H:%M:%S")
-    dept = "Khách" if name == "Unknown" else db.get_dept(name)
+    now = datetime.now()
+    now_str = now.strftime("%Y-%m-%d %H:%M:%S")
+    time_str = now.strftime("%H:%M:%S")
     
+    dept = "Khách"
+    image_path = "" # Đường dẫn ảnh gửi frontend
+
+    # Nếu là người lạ và có ảnh -> Lưu ảnh xuống đĩa
+    if name == "Unknown" and face_img is not None:
+        try:
+            # Tạo tên file duy nhất dựa trên timestamp
+            filename = f"stranger_{int(time.time())}_{cam_id}.jpg"
+            save_path = os.path.join(ABS_STRANGER_DIR, filename)
+            cv2.imwrite(save_path, face_img)
+            
+            # Đường dẫn tương đối cho React (phục vụ qua static)
+            image_path = f"/static/strangers/{filename}"
+            dept = "Cảnh báo"
+        except Exception as e:
+            print(f"Lỗi lưu ảnh người lạ: {e}")
+    else:
+        dept = db.get_dept(name)
+
     log_entry = {
         "full_time": now_str,
         "time": time_str,
@@ -256,20 +287,22 @@ def add_log(name, cam_id, score):
         "dept": dept, 
         "camera": f"CAM {cam_id+1}",
         "score": f"{score:.0%}",
-        "status": "authorized" if name != "Unknown" else "warning"
+        "status": "authorized" if name != "Unknown" else "warning",
+        "image": image_path 
     }
     
     activity_logs.insert(0, log_entry)
     if len(activity_logs) > MAX_LOGS: activity_logs.pop()
     save_log_to_file(log_entry)
 
+# --- HÀM XỬ LÝ AI CHÍNH (ĐÃ CẬP NHẬT CROP ẢNH) ---
 def process_ai_frame(frame, cam_id):
     if frame is None: return create_placeholder_frame()
     display_frame = frame.copy()
-    h, w, _ = display_frame.shape
+    h_frame, w_frame, _ = frame.shape
     
     display_frame = put_text_utf8(display_frame, f"CAM 0{cam_id+1} TRỰC TIẾP", (20, 30), (0, 255, 0), 1)
-    display_frame = put_text_utf8(display_frame, datetime.now().strftime("%d/%m %H:%M:%S"), (w-250, 30), (200, 200, 200), 0.8)
+    display_frame = put_text_utf8(display_frame, datetime.now().strftime("%d/%m %H:%M:%S"), (w_frame-250, 30), (200, 200, 200), 0.8)
 
     try:
         current_time = time.time()
@@ -317,9 +350,24 @@ def process_ai_frame(frame, cam_id):
                         color = (0, 255, 0)
                         dept = db.get_dept(most_common_name)
                         label = f"{most_common_name} | {dept}"
-                        if not tracker['logged']:
-                            add_log(most_common_name, cam_id, avg_score)
-                            tracker['logged'] = True
+                    
+                    # --- LOGIC GHI LOG VÀ CẮT ẢNH ---
+                    if not tracker['logged']:
+                        face_img = None
+                        # Chỉ cắt ảnh khi là Unknown để tiết kiệm tài nguyên
+                        if most_common_name == "Unknown":
+                            x1, y1, x2, y2 = bbox
+                            # Mở rộng vùng cắt một chút cho đẹp
+                            y1 = max(0, y1 - 20); y2 = min(h_frame, y2 + 20)
+                            x1 = max(0, x1 - 20); x2 = min(w_frame, x2 + 20)
+                            
+                            # Đảm bảo tọa độ không âm
+                            y1 = max(0, y1); x1 = max(0, x1)
+                            
+                            face_img = frame[y1:y2, x1:x2]
+                        
+                        add_log(most_common_name, cam_id, avg_score, face_img)
+                        tracker['logged'] = True
 
                 new_trackers.append(tracker)
                 x1, y1, x2, y2 = bbox
@@ -340,8 +388,12 @@ def process_ai_frame(frame, cam_id):
         
         trackers_state[cam_id] = [t for t in new_trackers if (current_time - t['last_seen'] < 1.0)]
             
-    except: pass
+    except Exception as e:
+        # print(f"Error AI: {e}") 
+        pass
     return display_frame
+
+# --- CÁC ROUTE API ---
 
 @app.route('/login', methods=['POST'])
 def login():
@@ -396,7 +448,6 @@ def update_employee():
         ma_nv = data.get('ma_nv')
         val = (data.get('ho_ten'), data.get('email'), data.get('sdt'), data.get('dia_chi'), 
                data.get('ten_phong'), data.get('ten_chuc_vu'), data.get('trang_thai'), ma_nv)
-        
         conn = get_connection(); cursor = conn.cursor()
         sql = """UPDATE nhan_vien SET ho_ten=%s, email=%s, sdt=%s, dia_chi=%s, ten_phong=%s, ten_chuc_vu=%s, trang_thai=%s WHERE ma_nv=%s"""
         cursor.execute(sql, val)
@@ -405,7 +456,6 @@ def update_employee():
     except Exception as e:
         return jsonify({"success": False, "message": str(e)}), 500
 
-# --- 4. API THÊM NHÂN VIÊN + GHI FILE TXT (ĐÃ CHUẨN HÓA ĐƯỜNG DẪN) ---
 @app.route('/api/add_employee_with_faces', methods=['POST'])
 def add_employee_with_faces():
     try:
@@ -425,59 +475,35 @@ def add_employee_with_faces():
         conn = get_connection()
         cursor = conn.cursor()
 
-        # 1. Lưu nhân viên
-        sql_nv = """
-        INSERT INTO nhan_vien (ho_ten, email, sdt, dia_chi, ten_phong, ten_chuc_vu, trang_thai)
-        VALUES (%s, %s, %s, %s, %s, %s, %s)
-        """
+        sql_nv = "INSERT INTO nhan_vien (ho_ten, email, sdt, dia_chi, ten_phong, ten_chuc_vu, trang_thai) VALUES (%s, %s, %s, %s, %s, %s, %s)"
         cursor.execute(sql_nv, (ho_ten, email, sdt, dia_chi, ten_phong, ten_chuc_vu, trang_thai))
         ma_nv = cursor.lastrowid
 
-        # 2. Xử lý ảnh -> Vector -> Lưu ra file TXT
         added_faces = 0
         for i, file in enumerate(files):
             img_bytes = np.frombuffer(file.read(), np.uint8)
             img = cv2.imdecode(img_bytes, cv2.IMREAD_COLOR)
             if img is None: continue
-
             faces = face_app.get(img)
             if not faces: continue
-
             face = max(faces, key=lambda f: (f.bbox[2]-f.bbox[0])*(f.bbox[3]-f.bbox[1]))
             embedding_list = face.embedding.tolist()
             
-            # --- TẠO FILE TXT (Dùng đường dẫn tuyệt đối) ---
             filename = f"face_{ma_nv}_{int(time.time())}_{i}.txt"
             file_path = os.path.join(ABS_VECTOR_DIR, filename)
-            
-            # Ghi dãy số vào file
             with open(file_path, "w") as f:
                 f.write(json.dumps(embedding_list))
             
-            # Lưu đường dẫn tương đối (chỉ tên file) hoặc tuyệt đối vào DB
-            # Ở đây em chọn lưu đường dẫn tương đối (face_vectors/filename.txt) để dễ nhìn
-            # Nhưng khi đọc sẽ dùng ABS_VECTOR_DIR ghép vào
             relative_path = os.path.join(VECTOR_DIR, filename).replace("\\", "/")
-            
             sql_face = "INSERT INTO face_embeddings (ma_nv, vector_data) VALUES (%s, %s)"
             cursor.execute(sql_face, (ma_nv, relative_path))
-            
             added_faces += 1
 
-        conn.commit()
-        cursor.close()
-        conn.close()
-        
-        # Cập nhật RAM
+        conn.commit(); cursor.close(); conn.close()
         db.reload_db()
 
-        return jsonify({
-            "success": True,
-            "message": f"Đã thêm nhân viên và {added_faces} khuôn mặt (Lưu File)!"
-        })
-
+        return jsonify({"success": True, "message": f"Đã thêm nhân viên và {added_faces} khuôn mặt!"})
     except Exception as e:
-        print("ERROR:", e)
         return jsonify({"success": False, "message": str(e)}), 500
 
 @app.route('/video_feed/<int:cam_id>')
@@ -505,7 +531,6 @@ def delete_employee():
         ma_nv = data.get('ma_nv')
         conn = get_connection(); cursor = conn.cursor()
         
-        # Xóa file TXT trước khi xóa DB (dọn rác)
         cursor.execute("SELECT vector_data FROM face_embeddings WHERE ma_nv = %s", (ma_nv,))
         rows = cursor.fetchall()
         for row in rows:
@@ -513,18 +538,67 @@ def delete_employee():
             if db_path:
                 filename = os.path.basename(db_path)
                 file_path = os.path.join(ABS_VECTOR_DIR, filename)
-                
-                if os.path.exists(file_path):
-                    os.remove(file_path)
-                    print(f"Đã xóa file: {file_path}")
+                if os.path.exists(file_path): os.remove(file_path)
 
         cursor.execute("DELETE FROM nhan_vien WHERE ma_nv = %s", (ma_nv,))
-        conn.commit()
-        cursor.close(); conn.close()
+        conn.commit(); cursor.close(); conn.close()
         db.reload_db()
         return jsonify({"success": True, "message": "Đã xóa vĩnh viễn!"})
     except Exception as e:
         return jsonify({"success": False, "message": str(e)}), 500
+
+# --- API DASHBOARD THỐNG KÊ (ĐÃ CẬP NHẬT TRẢ ẢNH + CỘNG DỒN CẢNH BÁO) ---
+@app.route('/api/dashboard-stats', methods=['GET'])
+def get_dashboard_stats():
+    # 1. Tính số người hiện diện (Unique log hôm nay) & Đếm CẢNH BÁO CỘNG DỒN
+    today_str = datetime.now().strftime("%Y-%m-%d")
+    unique_visitors = set()
+    cumulative_warnings = 0 # Biến đếm cộng dồn
+    
+    current_logs = list(activity_logs)
+    
+    for log in current_logs:
+        if log.get('full_time', '').startswith(today_str):
+            name = log.get('name', 'Unknown')
+            if name == 'Unknown':
+                cumulative_warnings += 1 # Cứ có log Unknown là +1
+            else:
+                unique_visitors.add(name)
+
+    # 2. Format logs trả về (bao gồm link ảnh)
+    formatted_logs = []
+    for log in current_logs[:10]: # Lấy 10 log mới nhất
+        formatted_logs.append({
+            "id": log.get('name', 'N/A'),
+            "name": log.get('name', 'Unknown'),
+            "loc": log.get('camera', 'Unknown Cam'),
+            "time": log.get('time', ''),
+            "status": "Cảnh báo" if log.get('name') == "Unknown" else "Hợp lệ",
+            "image": log.get('image', '') # Trả về link ảnh
+        })
+
+    # 3. Lấy tổng nhân viên DB
+    total_employees = 0
+    try:
+        conn = get_connection()
+        if conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT COUNT(*) FROM nhan_vien")
+            res = cursor.fetchone()
+            if res: total_employees = res[0]
+            cursor.close(); conn.close()
+    except: total_employees = 150 
+
+    # 4. Thông số phần cứng giả lập
+    import random
+    return jsonify({
+        "present_count": len(unique_visitors),
+        "total_employees": total_employees,
+        "warning_count": cumulative_warnings, # Trả về số cộng dồn
+        "logs": formatted_logs,
+        "gpu_load": random.randint(10, 40),
+        "temp": random.randint(45, 65)
+    })
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000, debug=False)

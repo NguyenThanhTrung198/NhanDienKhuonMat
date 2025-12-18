@@ -2,7 +2,14 @@ import { useState, useEffect } from "react";
 import Layout from "@/components/Layout";
 import StatusCard from "@/components/StatusCard";
 import CameraFeed from "@/components/CameraFeed";
-import { Users, DoorClosed, AlertTriangle, Activity } from "lucide-react";
+import {
+  Users,
+  DoorClosed,
+  AlertTriangle,
+  Activity,
+  CheckCircle,
+  ShieldAlert, // Icon khiên cảnh báo
+} from "lucide-react";
 import {
   AreaChart,
   Area,
@@ -27,122 +34,65 @@ const initialChartData = [
   { time: "10:00:30", visits: 55 },
 ];
 
-const sampleNames = [
-  "Nguyễn Văn An",
-  "Trần Thị Mai",
-  "Lê Hoàng Nam",
-  "Phạm Văn Hùng",
-  "Vũ Thị Lan",
-  "Hoàng Tuấn Kiệt",
-  "Unknown User",
-];
-const sampleLocs = [
-  "Cổng Chính (FaceID)",
-  "Thang máy B",
-  "Cửa thoát hiểm",
-  "Phòng Server",
-  "Sảnh Lễ Tân",
-];
-
 export default function Dashboard() {
   const [chartData, setChartData] = useState(initialChartData);
 
   // State Logs
-  const [logs, setLogs] = useState([
-    {
-      id: "NV-2301",
-      name: "Nguyễn Văn An",
-      loc: "Cổng Chính (FaceID)",
-      time: "12:10:45",
-      status: "Hợp lệ",
-    },
-    {
-      id: "KH-0012",
-      name: "Trần Thị Mai",
-      loc: "Thang máy B",
-      time: "12:08:30",
-      status: "Hợp lệ",
-    },
-    {
-      id: "UNKNOWN",
-      name: "Không xác định",
-      loc: "Cửa thoát hiểm",
-      time: "11:55:12",
-      status: "Cảnh báo",
-    },
-  ]);
+  const [logs, setLogs] = useState([]);
 
-  const [gpuLoad, setGpuLoad] = useState(0); // GPU cũng nên start từ 0 cho đồng bộ
+  const [gpuLoad, setGpuLoad] = useState(0);
   const [temp, setTemp] = useState(40);
 
-  // --- SỬA Ở ĐÂY: Mặc định là 0 ---
+  // --- STATE QUẢN LÝ NHÂN SỰ ---
   const [presentCount, setPresentCount] = useState(0);
+  const [totalEmployees, setTotalEmployees] = useState(0);
 
+  // --- STATE CẢNH BÁO AN NINH ---
+  const [warningCount, setWarningCount] = useState(0);
+
+  // --- LOGIC MỚI: GỌI API THAY VÌ RANDOM ---
   useEffect(() => {
-    const interval = setInterval(() => {
-      const now = new Date();
-      const timeString = now.toLocaleTimeString("vi-VN", { hour12: false });
+    const fetchDashboardData = async () => {
+      try {
+        // Gọi API Python
+        const res = await fetch("http://localhost:5000/api/dashboard-stats");
+        const data = await res.json();
 
-      // A. Cập nhật biểu đồ
-      setChartData((prevData) => {
-        const newVisits = Math.floor(Math.random() * (80 - 30 + 1) + 30);
-        const newData = [
-          ...prevData.slice(1),
-          { time: timeString, visits: newVisits },
-        ];
-        return newData;
-      });
+        // 1. Cập nhật số liệu từ Python
+        setPresentCount(data.present_count);
+        setTotalEmployees(data.total_employees);
 
-      // B. Cập nhật chỉ số hệ thống (Nhảy số)
-      setGpuLoad(
-        (prev) =>
-          Math.min(100, Math.max(10, prev + Math.floor(Math.random() * 20 - 5))) // Tăng tốc độ biến động lúc đầu
-      );
-      setTemp((prev) =>
-        Math.min(90, Math.max(40, prev + Math.floor(Math.random() * 4 - 2)))
-      );
+        // 2. Cập nhật số lượng cảnh báo (QUAN TRỌNG: Backend phải trả về đúng số người lạ)
+        setWarningCount(data.warning_count);
 
-      // --- C. LOGIC MỚI CHO NHÂN SỰ ---
-      setPresentCount((prev) => {
-        const targetMin = 135;
-        const targetMax = 150;
+        setLogs(data.logs); // Log thật từ camera
+        setGpuLoad(data.gpu_load);
+        setTemp(data.temp);
 
-        // Giai đoạn 1: Nếu chưa đạt mức tối thiểu (đang khởi động)
-        if (prev < targetMin) {
-          // Tăng nhanh (cộng thêm từ 10 đến 25 người mỗi lần quét)
-          // Để tạo cảm giác dữ liệu đang load vào vù vù
-          const jump = Math.floor(Math.random() * 15) + 10;
-          return Math.min(targetMax, prev + jump);
-        }
+        // 3. Cập nhật biểu đồ (Vẫn giữ logic chạy theo thời gian thực)
+        const now = new Date();
+        const timeString = now.toLocaleTimeString("vi-VN", { hour12: false });
 
-        // Giai đoạn 2: Đã ổn định (logic cũ)
-        // 70% giữ nguyên, 30% thay đổi nhẹ (+/- 1)
-        if (Math.random() > 0.3) return prev;
-        const change = Math.random() > 0.5 ? 1 : -1;
-        return Math.min(targetMax, Math.max(targetMin, prev + change));
-      });
+        setChartData((prevData) => {
+          // Lấy số liệu thực tế làm dữ liệu cho biểu đồ
+          const currentVisits = data.present_count;
 
-      // D. Random Logs
-      if (Math.random() > 0.7) {
-        const randomName =
-          sampleNames[Math.floor(Math.random() * sampleNames.length)];
-        const randomLoc =
-          sampleLocs[Math.floor(Math.random() * sampleLocs.length)];
-        const isWarning = randomName === "Unknown User";
-
-        const newLog = {
-          id: isWarning
-            ? "ALERT"
-            : `NV-${Math.floor(Math.random() * 8999 + 1000)}`,
-          name: randomName,
-          loc: randomLoc,
-          time: timeString,
-          status: isWarning ? "Cảnh báo" : "Hợp lệ",
-        };
-
-        setLogs((prevLogs) => [newLog, ...prevLogs].slice(0, 5));
+          const newData = [
+            ...prevData.slice(1),
+            { time: timeString, visits: currentVisits },
+          ];
+          return newData;
+        });
+      } catch (error) {
+        console.error("Lỗi kết nối tới Server Python:", error);
       }
-    }, 1000); // --- Tăng tốc độ cập nhật lên 1 giây (thay vì 2s) để số nhảy từ 0 lên nhanh hơn ---
+    };
+
+    // Gọi ngay lập tức lần đầu
+    fetchDashboardData();
+
+    // Thiết lập vòng lặp gọi API mỗi 1 giây (1000ms) để phản ứng NHANH
+    const interval = setInterval(fetchDashboardData, 1000);
 
     return () => clearInterval(interval);
   }, []);
@@ -169,20 +119,38 @@ export default function Dashboard() {
         <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
           <StatusCard
             title="Nhân sự hiện diện"
-            value={`${presentCount}/150`}
+            value={`${presentCount}/${totalEmployees}`}
             icon={Users}
             description="Tỷ lệ đi làm hôm nay"
-            // Nếu đang < 50 người (lúc mới load) thì hiện màu đỏ/vàng, đủ người thì xanh
-            trend={presentCount >= 135 ? "up" : "neutral"}
-            trendValue={`${((presentCount / 150) * 100).toFixed(1)}%`}
+            trend={
+              totalEmployees > 0 && presentCount / totalEmployees > 0.8
+                ? "up"
+                : "neutral"
+            }
+            trendValue={
+              totalEmployees > 0
+                ? `${((presentCount / totalEmployees) * 100).toFixed(1)}%`
+                : "0%"
+            }
           />
+
+          {/* --- THẺ CẢNH BÁO AN NINH --- */}
+          {/* Logic: Chỉ cần warningCount > 0 là prop alert=true kích hoạt màu đỏ ngay */}
           <StatusCard
-            title="Cảnh báo khuôn mặt"
-            value="1"
-            icon={AlertTriangle}
-            description="Phát hiện người lạ"
-            alert={true}
+            title={
+              warningCount > 0 ? "CẢNH BÁO XÂM NHẬP" : "Trạng thái an ninh"
+            }
+            // Nếu có cảnh báo, hiện số lượng kèm dấu chấm than (!)
+            value={warningCount > 0 ? `${warningCount} ĐỐI TƯỢNG` : "An toàn"}
+            // Đổi icon: Tam giác cảnh báo (đỏ) hoặc Check xanh (an toàn)
+            icon={warningCount > 0 ? AlertTriangle : CheckCircle}
+            description={
+              warningCount > 0 ? "Phát hiện người lạ mặt!" : "Khu vực an toàn"
+            }
+            // Kích hoạt màu đỏ cho thẻ
+            alert={warningCount > 0}
           />
+
           <StatusCard
             title="Trạng thái Cửa từ"
             value="Đã khóa"
@@ -322,9 +290,33 @@ export default function Dashboard() {
         {/* Recent Logs Table */}
         <Card>
           <CardHeader>
-            <CardTitle>Nhật ký nhận diện (Live Feed)</CardTitle>
+            <CardTitle className="flex justify-between items-center">
+              <span>Nhật ký nhận diện (Live Feed)</span>
+              <span className="text-xs font-normal text-muted-foreground bg-secondary px-2 py-1 rounded-full">
+                {logs.length} events
+              </span>
+            </CardTitle>
           </CardHeader>
+
           <CardContent>
+            {/* --- KHỐI CẢNH BÁO PHỤ DƯỚI TIÊU ĐỀ --- */}
+            {/* Chỉ hiện ra khi có người lạ (warningCount > 0) */}
+            {warningCount > 0 && (
+              <div className="mb-4 p-3 rounded-lg border border-red-500/50 bg-red-500/10 text-red-500 flex items-center gap-3 animate-pulse shadow-sm">
+                <div className="p-2 bg-red-500/20 rounded-full">
+                  <ShieldAlert className="h-5 w-5" />
+                </div>
+                <div>
+                  <p className="font-bold text-sm">PHÁT HIỆN XÂM NHẬP!</p>
+                  <p className="text-xs opacity-90">
+                    Hệ thống đang theo dõi{" "}
+                    <span className="font-bold text-base">{warningCount}</span>{" "}
+                    đối tượng lạ mặt.
+                  </p>
+                </div>
+              </div>
+            )}
+
             <div className="space-y-4">
               {logs.map((log, i) => (
                 <div
