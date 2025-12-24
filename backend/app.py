@@ -5,7 +5,6 @@ from insightface.app import FaceAnalysis
 import os
 import time
 from datetime import datetime
-# [THÊM] import send_from_directory
 from flask import Flask, Response, request, jsonify, session, redirect, url_for, send_from_directory
 import threading
 import json
@@ -37,7 +36,14 @@ np.int = int
 
 CORS(app, resources={r"/*": {"origins": "http://localhost:3000"}}, supports_credentials=True)
 
-SYSTEM_SETTINGS = { "threshold": 0.50, "scan_duration": 2.0 } 
+SYSTEM_SETTINGS = { "threshold": 0.50, "scan_duration": 1.5 } # thời gian chờ khi camera quét
+
+# [MỚI] Cấu hình chống Spam Log
+# Dict lưu thời gian nhận diện gần nhất: { "Tên người": thời_gian_timestamp }
+LAST_LOG_TIME = {} 
+# Thời gian chờ giữa 2 lần log (tính bằng giây). 
+# Ví dụ: 60s = 1 phút. Nếu muốn 1 ngày chỉ 1 lần thì để số thật lớn (ví dụ 43200 = 12 tiếng)
+LOG_COOLDOWN = 60
 USERS = { "admin": { "name": "Ratlabuon", "password": "Khothietchu", "role": "admin", "dept": "all" } }
 
 global_frame_0 = None; global_frame_1 = None; lock = threading.Lock()
@@ -45,44 +51,76 @@ global_frame_0 = None; global_frame_1 = None; lock = threading.Lock()
 # --- 2. XỬ LÝ DATABASE & AI ---
 class FaceDatabase:
     def __init__(self):
-        self.known_embeddings = [] 
+        self.known_embeddings = []      # List nhân viên
+        self.stranger_embeddings = []   # List người lạ (MỚI)
+        self.next_stranger_id = 1       # ID tiếp theo
         self.reload_db()
 
     def reload_db(self):
-        print("System: Đang tải dữ liệu khuôn mặt từ DATABASE...")
+        print("System: Đang tải dữ liệu khuôn mặt...")
         self.known_embeddings = []
+        self.stranger_embeddings = [] # Reset list người lạ
+        
         try:
             conn = get_connection()
             if not conn: return
             cursor = conn.cursor(dictionary=True)
+            
+            # 1. Tải Nhân viên (Code cũ)
             cursor.execute("SELECT nv.ho_ten, nv.ten_phong, nv.ten_chuc_vu, fe.vector_data FROM face_embeddings fe JOIN nhan_vien nv ON fe.ma_nv = nv.ma_nv")
-            rows = cursor.fetchall()
-            for row in rows:
+            for row in cursor.fetchall():
                 if not row['vector_data']: continue
-                file_path = os.path.join(ABS_VECTOR_DIR, os.path.basename(row['vector_data']))
-                if os.path.exists(file_path):
-                    with open(file_path, 'r') as f:
-                        embedding = np.array(json.load(f), dtype=np.float32)
-                        norm = np.linalg.norm(embedding)
-                        if norm != 0: embedding = embedding / norm
-                        self.known_embeddings.append({
-                            "name": row['ho_ten'],
-                            "embedding": embedding,
-                            "dept": row['ten_phong'],
-                            "role": row['ten_chuc_vu'] or "Nhân viên"
-                        })
-            cursor.close(); conn.close()
-        except Exception as e: print(f"Lỗi tải DB: {e}")
+                # ... (Đoạn xử lý file_path giữ nguyên như cũ của anh) ...
+                # ... self.known_embeddings.append(...)
+            
+            # 2. [MỚI] Tải Người lạ từ DB lên RAM
+            cursor.execute("SELECT stranger_label, vector_data FROM vector_nguoi_la")
+            for row in cursor.fetchall():
+                # Vector người lạ lưu dạng chuỗi JSON trong DB
+                if row['vector_data']:
+                    emb = np.array(json.loads(row['vector_data']), dtype=np.float32)
+                    self.stranger_embeddings.append({
+                        "name": row['stranger_label'],
+                        "embedding": emb
+                    })
+                    # Cập nhật ID đếm để không bị trùng (lấy số đuôi của label)
+                    try:
+                        sid = int(row['stranger_label'].split('_')[-1])
+                        if sid >= self.next_stranger_id: self.next_stranger_id = sid + 1
+                    except: pass
 
+            cursor.close(); conn.close()
+            print(f"✅ Đã tải: {len(self.known_embeddings)} nhân viên, {len(self.stranger_embeddings)} người lạ đã biết.")
+
+            
+            
+        except Exception as e: print(f"❌ Lỗi tải DB: {e}")
+    # [ĐÃ CHỈNH SỬA] Hàm nhận diện chuẩn
     def recognize(self, target_embedding):
+        # 1. Chuẩn hóa vector đầu vào
         norm = np.linalg.norm(target_embedding)
-        if norm != 0: target_embedding = target_embedding / norm
-        max_score = 0; identity = "Unknown"
+        if norm != 0:
+            target_embedding = target_embedding / norm
+        
+        max_score = 0
+        identity = "Unknown"
+        
+        # 2. So sánh vector
         for face in self.known_embeddings:
             score = np.dot(target_embedding, face["embedding"])
-            if score > max_score: max_score = score; identity = face["name"]
-        return (identity, max_score) if max_score >= SYSTEM_SETTINGS["threshold"] else ("Unknown", max_score)
-    
+            if score > max_score:
+                max_score = score
+                identity = face["name"]
+        
+        # 3. Chuyển về float python chuẩn
+        max_score = float(max_score)
+
+        # 4. Kiểm tra ngưỡng
+        if max_score >= SYSTEM_SETTINGS["threshold"]:
+            return identity, max_score
+            
+        return "Unknown", max_score
+
     def get_person_info(self, name):
         for f in self.known_embeddings: 
             if f["name"] == name: return {"dept": f["dept"], "role": f["role"]}
@@ -114,14 +152,43 @@ def calculate_iou(boxA, boxB):
     union = (boxA[2]-boxA[0])*(boxA[3]-boxA[1]) + (boxB[2]-boxB[0])*(boxB[3]-boxB[1]) - interArea
     return interArea / float(union) if union > 0 else 0
 
-# --- 4. THREAD CAMERA ---
+# # --- 4. THREAD CAMERA ---
+# def camera_thread():
+#     global global_frame_0, global_frame_1
+#     cap0 = cv2.VideoCapture(0); cap1 = cv2.VideoCapture(1)
+#     while True:
+#         ret0, frame0 = cap0.read(); ret1, frame1 = cap1.read()
+#         with lock: global_frame_0 = cv2.flip(frame0, 1) if ret0 else None; global_frame_1 = frame1 if ret1 else None
+#         time.sleep(0.03)
+# t = threading.Thread(target=camera_thread); t.daemon = True; t.start()
+
+# --- 4. THREAD CAMERA (ĐÃ NÂNG CẤP LÊN HD) ---
 def camera_thread():
     global global_frame_0, global_frame_1
-    cap0 = cv2.VideoCapture(0); cap1 = cv2.VideoCapture(1)
+    
+    # Mở camera
+    cap0 = cv2.VideoCapture(0)
+    cap1 = cv2.VideoCapture(1)
+
+    # [QUAN TRỌNG] Ép độ phân giải lên HD (1280x720) để hết bị "ô vuông"
+    # Cam 0
+    cap0.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
+    cap0.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
+    # Cam 1 (Nếu có)
+    cap1.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
+    cap1.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
+
     while True:
-        ret0, frame0 = cap0.read(); ret1, frame1 = cap1.read()
-        with lock: global_frame_0 = cv2.flip(frame0, 1) if ret0 else None; global_frame_1 = frame1 if ret1 else None
+        ret0, frame0 = cap0.read()
+        ret1, frame1 = cap1.read()
+        
+        with lock: 
+            # Lật ảnh (mirror) cho tự nhiên
+            global_frame_0 = cv2.flip(frame0, 1) if ret0 else None
+            global_frame_1 = frame1 if ret1 else None
+            
         time.sleep(0.03)
+
 t = threading.Thread(target=camera_thread); t.daemon = True; t.start()
 
 # --- LOGIC QUẢN LÝ NGƯỜI LẠ ---
@@ -141,6 +208,7 @@ def get_stranger_identity(embedding):
     return new_id
 
 # --- [MỚI] HÀM CHUYÊN LƯU ẢNH NGƯỜI LẠ ---
+# --- [ĐÃ SỬA] HÀM CHUYÊN LƯU ẢNH NGƯỜI LẠ ---
 def save_stranger_image(name, face_img):
     if face_img is None or face_img.size == 0: 
         return ""
@@ -153,32 +221,59 @@ def save_stranger_image(name, face_img):
         cv2.imwrite(save_path, face_img)
         print(f"📸 Đã chụp ảnh người lạ: {save_path}")
         
-        # Trả về đường dẫn web
-        return f"/static/strangers/{filename}"
+        # [QUAN TRỌNG] Trả về đường dẫn TUYỆT ĐỐI (có http://localhost:5000)
+        # Để React ở cổng 3000 có thể load được ảnh từ cổng 5000
+        return f"http://localhost:5000/static/strangers/{filename}"
+        
     except Exception as e:
         print(f"⚠️ Lỗi lưu ảnh: {e}")
         return ""
-
-# --- 5. GHI LOG VÀO DB ---
+# --- 5. GHI LOG VÀO DB (ĐÃ CÓ LOGIC CHỐNG SPAM) ---
+# --- [ĐÃ SỬA] GHI LOG VÀO DB (LƯU ẢNH DẠNG BLOB) ---
 def add_log(name, cam_id, score, face_img=None):
-    now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S"); camera_name = f"CAM {cam_id+1}"
+    global LAST_LOG_TIME
+    
+    # Logic chống spam
+    current_time = time.time()
+    if name in LAST_LOG_TIME:
+        if current_time - LAST_LOG_TIME[name] < LOG_COOLDOWN:
+            return True 
+
+    now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    camera_name = f"CAM {cam_id+1}"
+    
     try:
         conn = get_connection(); cursor = conn.cursor()
         
         if "Người lạ" in name or "Unknown" in name:
-            # Gọi hàm lưu ảnh riêng
-            image_path = save_stranger_image(name, face_img)
-            
-            cursor.execute("INSERT INTO nguoi_la (thoi_gian, camera, trang_thai, image_path) VALUES (%s, %s, %s, %s)", 
-                           (now_str, camera_name, name, image_path))
-        else:
-            info = db.get_person_info(name)
-            cursor.execute("INSERT INTO nhat_ky_nhan_dien (thoi_gian, ten, phong_ban, camera, do_tin_cay, trang_thai, image_path) VALUES (%s, %s, %s, %s, %s, %s, %s)", 
-                           (now_str, name, info['dept'], camera_name, float(score), "authorized", ""))
-                           
-        conn.commit(); cursor.close(); conn.close(); return True
-    except Exception as e: print(f"DB Error: {e}"); return False
+            # 1. Chuyển đổi ảnh OpenCV sang nhị phân (Binary)
+            img_blob = None
+            if face_img is not None and face_img.size > 0:
+                # Nén ảnh thành JPG chất lượng 90
+                success, encoded_img = cv2.imencode('.jpg', face_img, [int(cv2.IMWRITE_JPEG_QUALITY), 90])
+                if success:
+                    img_blob = encoded_img.tobytes()
 
+            # 2. Lưu trực tiếp cục nhị phân (img_blob) vào cột image_data
+            # Lưu ý: Không cần image_path nữa
+            sql = "INSERT INTO nguoi_la (thoi_gian, camera, trang_thai, image_data, image_path) VALUES (%s, %s, %s, %s, %s)"
+            cursor.execute(sql, (now_str, camera_name, name, img_blob, ""))
+            
+        else:
+            # Lưu người quen (Giữ nguyên logic cũ)
+            info = db.get_person_info(name)
+            dept = info.get('dept') or "Chưa cập nhật"
+            cursor.execute("INSERT INTO nhat_ky_nhan_dien (thoi_gian, ten, phong_ban, camera, do_tin_cay, trang_thai, image_path) VALUES (%s, %s, %s, %s, %s, %s, %s)", 
+                           (now_str, name, dept, camera_name, float(score), "authorized", ""))
+            
+        conn.commit(); cursor.close(); conn.close()
+        print(f" >> ✅ Đã lưu nhật ký vào DB: {name}")
+        
+        LAST_LOG_TIME[name] = current_time
+        return True
+
+    except Exception as e: 
+        print(f" >> ❌ Lỗi DB: {e}"); return False
 # --- 6. XỬ LÝ AI ---
 def process_ai_frame(frame, cam_id):
     if frame is None: return create_placeholder_frame()
@@ -207,7 +302,10 @@ def process_ai_frame(frame, cam_id):
                         stranger_id = tracker['stranger_id']
                         common_name = f"Người lạ {stranger_id}"; display_label = f"NGUOI LA {stranger_id}"; color = (0, 0, 255)
                     else:
-                        info = db.get_person_info(common_name); display_label = f"{common_name} - {info['role']}"; color = (0, 255, 0)
+                        info = db.get_person_info(common_name)
+                        # [ĐÃ CHỈNH SỬA] Hiển thị phần trăm độ tin cậy
+                        display_label = f"{common_name} ({int(avg_score*100)}%) - {info['role']}"
+                        color = (0, 255, 0)
                     
                     if not tracker['logged']:
                         # [CẮT ẢNH AN TOÀN] Kiểm tra tọa độ cắt để tránh lỗi ảnh rỗng
@@ -335,67 +433,62 @@ def get_dashboard_stats():
             for row in cur.fetchall():
                 stats['logs'].append({"id": row['id'], "name": row['ten'], "loc": row['camera'], "time": row['thoi_gian'].strftime("%H:%M:%S"), "status": "Hợp lệ", "image": ""})
             cur.close(); conn.close()
+            # ... (đoạn trên giữ nguyên)
+            # [FIX] Lấy danh sách log mới nhất
+            cur.execute("SELECT * FROM nhat_ky_nhan_dien ORDER BY id DESC LIMIT 10")
+            for row in cur.fetchall():
+                stats['logs'].append({
+                    "id": row['id'], 
+                    "name": row['ten'], 
+                    "dept": row['phong_ban'],  # <--- [THÊM DÒNG NÀY] Lấy tên phòng ban
+                    "loc": row['camera'], 
+                    "time": row['thoi_gian'].strftime("%H:%M:%S %d/%m"),
+                    "status": "Hợp lệ", 
+                    "image": ""
+                })
+            cur.close(); conn.close()
+# ... (đoạn dưới giữ nguyên)
     except: pass
     import random; stats.update({"gpu_load": random.randint(10, 40), "temp": random.randint(45, 65)})
     return jsonify(stats)
 
 # --- [API] DANH SÁCH CẢNH BÁO ---
 @app.route('/api/security/alerts', methods=['GET'])
-@app.route('/api/security/alerts', methods=['GET'])
 def get_security_alerts():
     try:
         conn = get_connection()
         cursor = conn.cursor(dictionary=True)
-        cursor.execute("SELECT * FROM nguoi_la ORDER BY thoi_gian DESC LIMIT 100")
+        # [QUAN TRỌNG] Chỉ lấy các cột cần thiết, KHÔNG lấy image_data ở đây để tránh nặng API
+        cursor.execute("SELECT id, thoi_gian, camera, trang_thai FROM nguoi_la ORDER BY thoi_gian DESC LIMIT 100")
         rows = cursor.fetchall()
-        cursor.close()
-        conn.close()
+        cursor.close(); conn.close()
 
         grouped = []
-
         for row in rows:
             dt = row['thoi_gian']
-            img_path = row['image_path'] or "https://placehold.co/400"
+            
+            # [QUAN TRỌNG] Tạo đường dẫn gọi vào API xem ảnh dựa vào ID
+            # Frontend sẽ gọi: http://localhost:5000/api/image/view/123
+            img_url = f"http://localhost:5000/api/image/view/{row['id']}"
 
-            detail = {
-                "time": dt.strftime("%H:%M:%S"),
-                "img": img_path
-            }
-
-            name = row['trang_thai']
-            cam = row['camera']
+            detail = { "time": dt.strftime("%H:%M:%S"), "img": img_url }
+            name = row['trang_thai']; cam = row['camera']
 
             found = False
             for g in grouped:
                 if g['location'] == name and g['cam'] == cam:
-                    g['count'] += 1
-                    g['details'].append(detail)
-
-                    # ✅ cập nhật ảnh đại diện = ảnh mới nhất
-                    if img_path and not img_path.startswith("https://placehold"):
-                        g['img'] = img_path
-
-                    found = True
-                    break
-
+                    g['count'] += 1; g['details'].append(detail); g['img'] = img_url; found = True; break
+            
             if not found:
                 grouped.append({
-                    "id": row['id'],
-                    "location": name,
-                    "cam": cam,
-                    "date": dt.strftime("%d/%m/%Y"),
-                    "time": dt.strftime("%H:%M:%S"),
-                    "img": img_path,
-                    "count": 1,
-                    "details": [detail]
+                    "id": row['id'], "location": name, "cam": cam,
+                    "date": dt.strftime("%d/%m/%Y"), "time": dt.strftime("%H:%M:%S"),
+                    "img": img_url, 
+                    "count": 1, "details": [detail]
                 })
 
         return jsonify(grouped)
-
-    except Exception as e:
-        print("API Error:", e)
-        return jsonify([])
-
+    except Exception as e: print("API Error:", e); return jsonify([])
 # --- [API] LẤY DANH SÁCH ĐEN (GOM NHÓM THEO TÊN) ---
 @app.route('/api/security/blacklist', methods=['GET'])
 def get_blacklist():
@@ -445,11 +538,32 @@ def add_to_blacklist():
         return jsonify({"success": True, "message": "Đã thêm vào danh sách đen!"})
     except Exception as e: return jsonify({"success": False, "message": str(e)}), 500
 
-    # --- [QUAN TRỌNG] API ĐỂ HIỂN THỊ ẢNH RA MÀN HÌNH ---
-@app.route('/static/strangers/<path:filename>')
-def serve_stranger_image(filename):
-    # Hàm này giúp Flask tìm đúng file trong thư mục strangers để trả về cho React
-    return send_from_directory(STRANGER_DIR, filename)
+#     # --- [QUAN TRỌNG] API ĐỂ HIỂN THỊ ẢNH RA MÀN HÌNH ---
+# @app.route('/static/strangers/<path:filename>')
+# def serve_stranger_image(filename):
+#     # Hàm này giúp Flask tìm đúng file trong thư mục strangers để trả về cho React
+#     return send_from_directory(STRANGER_DIR, filename)
 
+
+# --- [API MỚI] XEM ẢNH TỪ DATABASE ---
+@app.route('/api/image/view/<int:log_id>')
+def view_image_from_db(log_id):
+    try:
+        conn = get_connection()
+        cursor = conn.cursor()
+        # Chỉ lấy cột image_data của dòng có id tương ứng
+        cursor.execute("SELECT image_data FROM nguoi_la WHERE id = %s", (log_id,))
+        row = cursor.fetchone()
+        cursor.close(); conn.close()
+
+        if row and row[0]:
+            # Trả về dữ liệu ảnh (image/jpeg) cho trình duyệt hiển thị
+            return Response(row[0], mimetype='image/jpeg')
+        else:
+            # Trả về ảnh rỗng 1x1 pixel nếu không có ảnh
+            return Response(b'', mimetype='image/jpeg')
+    except Exception as e:
+        print(e)
+        return "Lỗi Server", 500
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000, debug=False)

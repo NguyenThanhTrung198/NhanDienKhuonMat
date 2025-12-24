@@ -5,28 +5,18 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Badge } from "@/components/ui/badge";
-import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import {
   ShieldAlert,
   UserX,
-  CheckCircle2,
   Search,
   AlertTriangle,
   Clock,
   Camera,
-  MoreHorizontal,
   RefreshCw,
   Eye,
   MapPin,
-  List,
   ImageIcon,
 } from "lucide-react";
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu";
 import {
   Dialog,
   DialogContent,
@@ -40,37 +30,24 @@ export default function Security() {
   const [blacklist, setBlacklist] = useState([]);
   const [loading, setLoading] = useState(false);
   const [selectedAlert, setSelectedAlert] = useState(null);
-
-  // [FIX] HÀM XỬ LÝ ĐƯỜNG DẪN ẢNH CHUẨN XÁC
-  const getImageUrl = (path: any) => {
-    // 1. Kiểm tra nếu path rỗng hoặc null hoặc không phải chuỗi
-    if (!path || typeof path !== "string" || path.trim() === "") {
+  // [FIX LỖI] Hàm xử lý ảnh thông minh
+  const getImageUrl = (path) => {
+    // 1. Nếu path rỗng hoặc null
+    if (!path || path === "")
       return "https://placehold.co/600x400?text=No+Image";
+
+    // 2. [QUAN TRỌNG] Nếu path đã chứa "http" (do Backend gửi Full URL) -> Dùng luôn
+    if (path.toString().startsWith("http")) {
+      return path;
     }
 
-    // 2. Nếu là ảnh online (http...) -> Giữ nguyên
-    if (path.startsWith("http")) return path;
+    // 3. Nếu là đường dẫn tương đối -> Mới cộng thêm localhost:5000
+    let cleanPath = path.toString().replace(/\\/g, "/");
+    if (!cleanPath.startsWith("/")) cleanPath = "/" + cleanPath;
 
-    // 3. Chuẩn hóa đường dẫn nội bộ:
-    let cleanPath = path;
-
-    // Thay thế tất cả dấu gạch chéo ngược '\' thành '/' (quan trọng cho Windows)
-    cleanPath = cleanPath.replace(/\\/g, "/");
-
-    // Loại bỏ dấu chấm ở đầu (ví dụ ./static -> /static)
-    if (cleanPath.startsWith(".")) {
-      cleanPath = cleanPath.substring(1);
-    }
-
-    // Đảm bảo luôn bắt đầu bằng dấu /
-    if (!cleanPath.startsWith("/")) {
-      cleanPath = "/" + cleanPath;
-    }
-
-    // Kết quả mong đợi: http://localhost:5000/static/strangers/ten_anh.jpg
     return `http://localhost:5000${cleanPath}`;
   };
-
+  // <-- Đảm bảo chỉ có 1 dấu đóng ngoặc } ở đây thôi nhé anh Trung!
   const fetchAlerts = async () => {
     try {
       setLoading(true);
@@ -135,14 +112,8 @@ export default function Security() {
     return () => clearInterval(interval);
   }, []);
 
-  // Component hiển thị thẻ Card (Dùng chung cho cả 2 tab)
-  const PersonCard = ({
-    item,
-    isBlacklist = false,
-  }: {
-    item: any;
-    isBlacklist?: boolean;
-  }) => (
+  // Component hiển thị thẻ Card
+  const PersonCard = ({ item, isBlacklist = false }) => (
     <Card
       key={item.id}
       className={`overflow-hidden border-l-4 shadow-md hover:shadow-lg transition-all ${
@@ -153,13 +124,13 @@ export default function Security() {
         className="aspect-video w-full bg-muted relative group cursor-pointer"
         onClick={() => setSelectedAlert(item)}
       >
+        {/* [ĐÃ SỬA] Bỏ Date.now() để tránh nhấp nháy ảnh */}
         <img
-          src={`${getImageUrl(item.img)}?t=${Date.now()}`}
+          src={getImageUrl(item.img)}
           alt="Detection"
           className="w-full h-full object-cover transition-transform group-hover:scale-105"
           onError={(e) => {
-            (e.target as HTMLImageElement).src =
-              "https://placehold.co/600x400?text=Image+Error";
+            e.target.src = "https://placehold.co/600x400?text=Image+Error";
           }}
         />
 
@@ -190,7 +161,7 @@ export default function Security() {
 
         <div className="absolute inset-0 bg-black/0 group-hover:bg-black/20 transition-all flex items-center justify-center opacity-0 group-hover:opacity-100">
           <span className="bg-white/90 text-black px-3 py-1 rounded-full text-sm font-medium">
-            Xem lịch sử
+            Xem chi tiết
           </span>
         </div>
       </div>
@@ -280,7 +251,7 @@ export default function Security() {
               </div>
             ) : (
               <div className="grid gap-6 md:grid-cols-2 lg:grid-cols-3">
-                {unknownDetections.map((item: any) => (
+                {unknownDetections.map((item) => (
                   <PersonCard key={item.id} item={item} isBlacklist={false} />
                 ))}
               </div>
@@ -303,7 +274,7 @@ export default function Security() {
               </div>
             ) : (
               <div className="grid gap-6 md:grid-cols-2 lg:grid-cols-3">
-                {blacklist.map((item: any) => (
+                {blacklist.map((item) => (
                   <PersonCard key={item.id} item={item} isBlacklist={true} />
                 ))}
               </div>
@@ -342,47 +313,43 @@ export default function Security() {
                   &rarr; Cũ nhất)
                 </div>
 
-                {(selectedAlert.details || []).map(
-                  (detail: any, index: number) => (
-                    <div
-                      key={index}
-                      className="flex gap-4 p-3 border rounded-lg bg-muted/20 items-center hover:bg-muted/50 transition-colors"
-                    >
-                      <div className="relative w-24 h-24 flex-shrink-0 rounded-md overflow-hidden border bg-black">
-                        <img
-                          src={getImageUrl(detail.img)}
-                          alt={`Lần xuất hiện ${index}`}
-                          className="w-full h-full object-contain"
-                          onError={(e) => {
-                            (e.target as HTMLImageElement).src =
-                              "https://placehold.co/100?text=Error";
-                          }}
-                        />
+                {(selectedAlert.details || []).map((detail, index) => (
+                  <div
+                    key={index}
+                    className="flex gap-4 p-3 border rounded-lg bg-muted/20 items-center hover:bg-muted/50 transition-colors"
+                  >
+                    <div className="relative w-24 h-24 flex-shrink-0 rounded-md overflow-hidden border bg-black">
+                      <img
+                        src={getImageUrl(detail.img)}
+                        alt={`Lần xuất hiện ${index}`}
+                        className="w-full h-full object-contain"
+                        onError={(e) => {
+                          e.target.src = "https://placehold.co/100?text=Error";
+                        }}
+                      />
+                    </div>
+                    <div className="flex-1 flex flex-col justify-center gap-1">
+                      <div className="flex items-center justify-between">
+                        <span className="font-bold text-base text-red-600">
+                          Ghi nhận lần {selectedAlert.count - index}
+                        </span>
+                        <Badge
+                          variant="outline"
+                          className="font-mono bg-white text-black"
+                        >
+                          {detail.time}
+                        </Badge>
                       </div>
-                      <div className="flex-1 flex flex-col justify-center gap-1">
-                        <div className="flex items-center justify-between">
-                          <span className="font-bold text-base text-red-600">
-                            Ghi nhận lần {selectedAlert.count - index}
-                          </span>
-                          <Badge
-                            variant="outline"
-                            className="font-mono bg-white text-black"
-                          >
-                            {detail.time}
-                          </Badge>
-                        </div>
-                        <div className="text-sm text-muted-foreground flex items-center gap-1">
-                          <Clock className="h-3 w-3" /> Ngày:{" "}
-                          {(selectedAlert as any).date}
-                        </div>
-                        <div className="text-sm text-muted-foreground flex items-center gap-1">
-                          <MapPin className="h-3 w-3" /> Vị trí:{" "}
-                          {(selectedAlert as any).cam}
-                        </div>
+                      <div className="text-sm text-muted-foreground flex items-center gap-1">
+                        <Clock className="h-3 w-3" /> Ngày: {selectedAlert.date}
+                      </div>
+                      <div className="text-sm text-muted-foreground flex items-center gap-1">
+                        <MapPin className="h-3 w-3" /> Vị trí:{" "}
+                        {selectedAlert.cam}
                       </div>
                     </div>
-                  )
-                )}
+                  </div>
+                ))}
               </div>
 
               {!selectedAlert.status?.includes("Dangerous") && (
