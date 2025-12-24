@@ -15,6 +15,26 @@ from flask_cors import CORS
 
 # Import kết nối CSDL
 from database import get_connection
+# door_state.py (hoặc nhét vào app.py cũng được)
+
+from flask import Flask, jsonify
+import time
+
+app = Flask(__name__)
+
+door_state = {
+    "status": "CLOSED",
+    "last_user": None,
+    "last_time": None
+}
+
+@app.route("/api/door-status")
+def door_status():
+    return jsonify({
+        "door_status": door_state["status"],
+        "last_user": door_state["last_user"],
+        "time": door_state["last_time"]
+    })
 
 # --- 1. CẤU HÌNH HỆ THỐNG & ĐƯỜNG DẪN ---
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))

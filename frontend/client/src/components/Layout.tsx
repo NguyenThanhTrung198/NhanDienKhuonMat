@@ -1,16 +1,16 @@
 import { useLocation, Link } from "wouter";
-import { 
-  LayoutDashboard, 
-  Users, 
-  ClipboardList, 
-  DoorOpen, 
-  BarChart3, 
-  Settings, 
-  Bell, 
+import {
+  LayoutDashboard,
+  Users,
+  ClipboardList,
+  DoorOpen,
+  BarChart3,
+  Settings,
+  Bell,
   LogOut,
   Menu,
   Search,
-  ShieldCheck
+  ShieldCheck,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
@@ -35,8 +35,10 @@ export default function Layout({ children }: { children: React.ReactNode }) {
     { icon: LayoutDashboard, label: "Tổng quan", href: "/dashboard" },
     { icon: Users, label: "Nhân sự", href: "/employees" },
     { icon: ClipboardList, label: "Chấm công", href: "/attendance" },
+
+    { icon: DoorOpen, label: "Giám sát cửa ra vào", href: "/door" },
     { icon: ShieldCheck, label: "An ninh & Cảnh báo", href: "/security" },
-    { icon: DoorOpen, label: "Cửa & Phòng máy chủ", href: "/doors" },
+    { icon: DoorOpen, label: "Phòng máy chủ", href: "/doors" },
     { icon: BarChart3, label: "Báo cáo", href: "/reports" },
     { icon: Settings, label: "Cài đặt", href: "/settings" },
   ];
@@ -49,10 +51,12 @@ export default function Layout({ children }: { children: React.ReactNode }) {
         </div>
         <div>
           <h1 className="font-bold text-lg tracking-tight">SecureFacility</h1>
-          <p className="text-[10px] text-muted-foreground uppercase tracking-wider">OS v2.4.0</p>
+          <p className="text-[10px] text-muted-foreground uppercase tracking-wider">
+            OS v2.4.0
+          </p>
         </div>
       </div>
-      
+
       <nav className="flex-1 p-4 space-y-1">
         {navItems.map((item) => {
           const isActive = location === item.href;
@@ -61,12 +65,19 @@ export default function Layout({ children }: { children: React.ReactNode }) {
               <div
                 className={cn(
                   "flex items-center gap-3 px-3 py-2.5 rounded-md text-sm font-medium transition-all duration-200 cursor-pointer group",
-                  isActive 
-                    ? "bg-primary/10 text-primary border-l-2 border-primary pl-[10px]" 
+                  isActive
+                    ? "bg-primary/10 text-primary border-l-2 border-primary pl-[10px]"
                     : "text-muted-foreground hover:bg-sidebar-accent hover:text-sidebar-accent-foreground hover:translate-x-1"
                 )}
               >
-                <item.icon className={cn("h-4 w-4", isActive ? "text-primary" : "text-muted-foreground group-hover:text-foreground")} />
+                <item.icon
+                  className={cn(
+                    "h-4 w-4",
+                    isActive
+                      ? "text-primary"
+                      : "text-muted-foreground group-hover:text-foreground"
+                  )}
+                />
                 {item.label}
               </div>
             </Link>
@@ -103,31 +114,44 @@ export default function Layout({ children }: { children: React.ReactNode }) {
                   <Menu className="h-5 w-5" />
                 </Button>
               </SheetTrigger>
-              <SheetContent side="left" className="p-0 w-64 border-r border-sidebar-border bg-sidebar">
+              <SheetContent
+                side="left"
+                className="p-0 w-64 border-r border-sidebar-border bg-sidebar"
+              >
                 <SidebarContent />
               </SheetContent>
             </Sheet>
-            
+
             <div className="hidden md:flex items-center relative max-w-md w-full">
               <Search className="absolute left-2.5 top-2.5 h-4 w-4 text-muted-foreground" />
-              <Input 
-                placeholder="Tìm kiếm hệ thống..." 
-                className="pl-9 bg-muted/50 border-none focus-visible:ring-1 w-[300px] h-9" 
+              <Input
+                placeholder="Tìm kiếm hệ thống..."
+                className="pl-9 bg-muted/50 border-none focus-visible:ring-1 w-[300px] h-9"
               />
             </div>
           </div>
 
           <div className="flex items-center gap-4">
-            <Button variant="ghost" size="icon" className="relative text-muted-foreground hover:text-foreground">
+            <Button
+              variant="ghost"
+              size="icon"
+              className="relative text-muted-foreground hover:text-foreground"
+            >
               <Bell className="h-5 w-5" />
               <span className="absolute top-2 right-2 h-2 w-2 rounded-full bg-destructive border-2 border-background"></span>
             </Button>
-            
+
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
-                <Button variant="ghost" className="relative h-9 w-9 rounded-full">
+                <Button
+                  variant="ghost"
+                  className="relative h-9 w-9 rounded-full"
+                >
                   <Avatar className="h-9 w-9 border border-border">
-                    <AvatarImage src="https://github.com/shadcn.png" alt="@shadcn" />
+                    <AvatarImage
+                      src="https://github.com/shadcn.png"
+                      alt="@shadcn"
+                    />
                     <AvatarFallback>AD</AvatarFallback>
                   </Avatar>
                 </Button>
@@ -135,7 +159,9 @@ export default function Layout({ children }: { children: React.ReactNode }) {
               <DropdownMenuContent className="w-56" align="end" forceMount>
                 <DropdownMenuLabel className="font-normal">
                   <div className="flex flex-col space-y-1">
-                    <p className="text-sm font-medium leading-none">Quản trị viên</p>
+                    <p className="text-sm font-medium leading-none">
+                      Quản trị viên
+                    </p>
                     <p className="text-xs leading-none text-muted-foreground">
                       admin@secureos.com
                     </p>

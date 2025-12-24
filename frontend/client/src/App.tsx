@@ -12,6 +12,7 @@ import Doors from "@/pages/doors";
 import Reports from "@/pages/reports";
 import Settings from "@/pages/settings";
 import Security from "@/pages/security";
+import Door from "@/pages/door";
 
 function Router() {
   return (
@@ -25,6 +26,8 @@ function Router() {
       <Route path="/doors" component={Doors} />
       <Route path="/reports" component={Reports} />
       <Route path="/settings" component={Settings} />
+      <Route path="/door" component={Door} />
+
       <Route component={NotFound} />
     </Switch>
   );
