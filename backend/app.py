@@ -230,10 +230,11 @@ def save_stranger_image(name, face_img):
         return ""
 # --- 5. GHI LOG VÀO DB (ĐÃ CÓ LOGIC CHỐNG SPAM) ---
 # --- [ĐÃ SỬA] GHI LOG VÀO DB (LƯU ẢNH DẠNG BLOB) ---
+# --- 5. GHI LOG VÀO DB ---
 def add_log(name, cam_id, score, face_img=None):
     global LAST_LOG_TIME
     
-    # Logic chống spam
+    # ... (Phần kiểm tra thời gian giữ nguyên) ...
     current_time = time.time()
     if name in LAST_LOG_TIME:
         if current_time - LAST_LOG_TIME[name] < LOG_COOLDOWN:
@@ -245,35 +246,32 @@ def add_log(name, cam_id, score, face_img=None):
     try:
         conn = get_connection(); cursor = conn.cursor()
         
-        if "Người lạ" in name or "Unknown" in name:
-            # 1. Chuyển đổi ảnh OpenCV sang nhị phân (Binary)
+        # Kiểm tra nếu là người lạ
+        if "Người lạ" in name or "Nguoi_La" in name or "Unknown" in name:
             img_blob = None
             if face_img is not None and face_img.size > 0:
-                # Nén ảnh thành JPG chất lượng 90
                 success, encoded_img = cv2.imencode('.jpg', face_img, [int(cv2.IMWRITE_JPEG_QUALITY), 90])
-                if success:
-                    img_blob = encoded_img.tobytes()
+                if success: img_blob = encoded_img.tobytes()
 
-            # 2. Lưu trực tiếp cục nhị phân (img_blob) vào cột image_data
-            # Lưu ý: Không cần image_path nữa
             sql = "INSERT INTO nguoi_la (thoi_gian, camera, trang_thai, image_data, image_path) VALUES (%s, %s, %s, %s, %s)"
             cursor.execute(sql, (now_str, camera_name, name, img_blob, ""))
             
         else:
-            # Lưu người quen (Giữ nguyên logic cũ)
+            # Lưu nhân viên
             info = db.get_person_info(name)
             dept = info.get('dept') or "Chưa cập nhật"
             cursor.execute("INSERT INTO nhat_ky_nhan_dien (thoi_gian, ten, phong_ban, camera, do_tin_cay, trang_thai, image_path) VALUES (%s, %s, %s, %s, %s, %s, %s)", 
                            (now_str, name, dept, camera_name, float(score), "authorized", ""))
             
         conn.commit(); cursor.close(); conn.close()
-        print(f" >> ✅ Đã lưu nhật ký vào DB: {name}")
-        
+        print(f" >> ✅ Đã lưu log: {name}")
         LAST_LOG_TIME[name] = current_time
         return True
 
     except Exception as e: 
         print(f" >> ❌ Lỗi DB: {e}"); return False
+
+# --- HẾT HÀM ADD_LOG (Dưới dòng này là hàm process_ai_frame luôn) ---
 # --- 6. XỬ LÝ AI ---
 def process_ai_frame(frame, cam_id):
     if frame is None: return create_placeholder_frame()
@@ -418,7 +416,6 @@ def update_employee():
         conn.commit(); cursor.close(); conn.close()
         return jsonify({"success": True})
     except Exception as e: return jsonify({"success": False, "message": str(e)}), 500
-
 @app.route('/api/dashboard-stats', methods=['GET'])
 def get_dashboard_stats():
     stats = {"present_count": 0, "total_employees": 0, "warning_count": 0, "logs": []}
@@ -426,31 +423,42 @@ def get_dashboard_stats():
         conn = get_connection()
         if conn:
             cur = conn.cursor(dictionary=True)
-            cur.execute("SELECT COUNT(*) as c FROM nhan_vien"); stats['total_employees'] = cur.fetchone()['c']
-            cur.execute("SELECT COUNT(*) as c FROM nguoi_la WHERE DATE(thoi_gian)=CURDATE()"); stats['warning_count'] = cur.fetchone()['c']
-            cur.execute("SELECT COUNT(DISTINCT ten) as c FROM nhat_ky_nhan_dien WHERE DATE(thoi_gian)=CURDATE()"); stats['present_count'] = cur.fetchone()['c']
-            cur.execute("SELECT * FROM nhat_ky_nhan_dien ORDER BY id DESC LIMIT 10")
-            for row in cur.fetchall():
-                stats['logs'].append({"id": row['id'], "name": row['ten'], "loc": row['camera'], "time": row['thoi_gian'].strftime("%H:%M:%S"), "status": "Hợp lệ", "image": ""})
-            cur.close(); conn.close()
-            # ... (đoạn trên giữ nguyên)
-            # [FIX] Lấy danh sách log mới nhất
+            
+            # 1. Tổng nhân viên
+            cur.execute("SELECT COUNT(*) as c FROM nhan_vien")
+            stats['total_employees'] = cur.fetchone()['c']
+            
+            # 2. [SỬA Ở ĐÂY] Đếm số NGƯỜI LẠ duy nhất (DISTINCT)
+            # Thay vì COUNT(*) ra 9, nó sẽ đếm tên duy nhất ra 2
+            cur.execute("SELECT COUNT(DISTINCT trang_thai) as c FROM nguoi_la WHERE DATE(thoi_gian)=CURDATE()")
+            stats['warning_count'] = cur.fetchone()['c']
+            
+            # 3. Đếm người quen hiện diện
+            cur.execute("SELECT COUNT(DISTINCT ten) as c FROM nhat_ky_nhan_dien WHERE DATE(thoi_gian)=CURDATE()")
+            stats['present_count'] = cur.fetchone()['c']
+            
+            # 4. Lấy log hiển thị (Cái này giữ nguyên để hiện danh sách chạy)
             cur.execute("SELECT * FROM nhat_ky_nhan_dien ORDER BY id DESC LIMIT 10")
             for row in cur.fetchall():
                 stats['logs'].append({
                     "id": row['id'], 
                     "name": row['ten'], 
-                    "dept": row['phong_ban'],  # <--- [THÊM DÒNG NÀY] Lấy tên phòng ban
+                    "dept": row['phong_ban'], 
                     "loc": row['camera'], 
-                    "time": row['thoi_gian'].strftime("%H:%M:%S %d/%m"),
+                    "time": row['thoi_gian'].strftime("%H:%M:%S %d/%m"), 
                     "status": "Hợp lệ", 
                     "image": ""
                 })
+            
             cur.close(); conn.close()
-# ... (đoạn dưới giữ nguyên)
-    except: pass
+            
+    except Exception as e: 
+        print(f"Dashboard Error: {e}")
+        
     import random; stats.update({"gpu_load": random.randint(10, 40), "temp": random.randint(45, 65)})
     return jsonify(stats)
+# ... (đoạn dưới giữ nguyên)
+
 
 # --- [API] DANH SÁCH CẢNH BÁO ---
 @app.route('/api/security/alerts', methods=['GET'])
