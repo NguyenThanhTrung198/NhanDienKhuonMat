@@ -55,9 +55,17 @@ app.secret_key = 'sieubaomat_anh_trung_dep_trai'
 np.int = int 
 
 CORS(app, resources={r"/*": {"origins": "http://localhost:3000"}}, supports_credentials=True)
+# Sửa 0.45 thành 0.60
+SYSTEM_SETTINGS = { "threshold": 0.60, "scan_duration": 1.5 }
+# --- [DÁN THÊM ĐOẠN NÀY VÀO DƯỚI DÒNG USERS HOẶC SYSTEM_SETTINGS] ---
 
-SYSTEM_SETTINGS = { "threshold": 0.50, "scan_duration": 1.5 } # thời gian chờ khi camera quét
+# Biến lưu trạng thái theo dõi của 2 camera (Lỗi của anh là do thiếu dòng này)
+trackers_state = {0: [], 1: []} 
 
+# Các biến phụ trợ cho logic người lạ
+RECENT_STRANGERS = []
+NEXT_STRANGER_ID = 1
+STRANGER_MATCH_THRESHOLD = 0.60
 # [MỚI] Cấu hình chống Spam Log
 # Dict lưu thời gian nhận diện gần nhất: { "Tên người": thời_gian_timestamp }
 LAST_LOG_TIME = {} 
@@ -77,74 +85,108 @@ class FaceDatabase:
         self.reload_db()
 
     def reload_db(self):
-        print("System: Đang tải dữ liệu khuôn mặt...")
+        print("System: Đang tải dữ liệu khuôn mặt từ Database (BLOB/JSON)...")
         self.known_embeddings = []
-        self.stranger_embeddings = [] # Reset list người lạ
+        self.stranger_embeddings = [] 
         
         try:
             conn = get_connection()
             if not conn: return
             cursor = conn.cursor(dictionary=True)
             
-            # 1. Tải Nhân viên (Code cũ)
+            # 1. Tải Nhân viên (Đọc trực tiếp JSON từ cột vector_data)
             cursor.execute("SELECT nv.ho_ten, nv.ten_phong, nv.ten_chuc_vu, fe.vector_data FROM face_embeddings fe JOIN nhan_vien nv ON fe.ma_nv = nv.ma_nv")
             for row in cursor.fetchall():
                 if not row['vector_data']: continue
-                # ... (Đoạn xử lý file_path giữ nguyên như cũ của anh) ...
-                # ... self.known_embeddings.append(...)
+                try:
+                    # [SỬA ĐỔI] Không open file nữa, load trực tiếp từ chuỗi
+                    emb = np.array(json.loads(row['vector_data']), dtype=np.float32)
+                    
+                    self.known_embeddings.append({
+                        "name": row['ho_ten'],
+                        "dept": row['ten_phong'],
+                        "role": row['ten_chuc_vu'],
+                        "embedding": emb
+                    })
+                except Exception as e: 
+                    print(f"⚠️ Lỗi data nhân viên {row['ho_ten']}: {e}")
             
-            # 2. [MỚI] Tải Người lạ từ DB lên RAM
+            # 2. Tải Người lạ (Giữ nguyên logic cũ vì nó đã dùng JSON DB rồi)
             cursor.execute("SELECT stranger_label, vector_data FROM vector_nguoi_la")
             for row in cursor.fetchall():
-                # Vector người lạ lưu dạng chuỗi JSON trong DB
                 if row['vector_data']:
                     emb = np.array(json.loads(row['vector_data']), dtype=np.float32)
                     self.stranger_embeddings.append({
                         "name": row['stranger_label'],
                         "embedding": emb
                     })
-                    # Cập nhật ID đếm để không bị trùng (lấy số đuôi của label)
                     try:
                         sid = int(row['stranger_label'].split('_')[-1])
                         if sid >= self.next_stranger_id: self.next_stranger_id = sid + 1
                     except: pass
 
             cursor.close(); conn.close()
-            print(f"✅ Đã tải: {len(self.known_embeddings)} nhân viên, {len(self.stranger_embeddings)} người lạ đã biết.")
-
+            print(f"✅ HOÀN TẤT: Đã nạp {len(self.known_embeddings)} vector NV và {len(self.stranger_embeddings)} vector người lạ.")
             
-            
-        except Exception as e: print(f"❌ Lỗi tải DB: {e}")
-    # [ĐÃ CHỈNH SỬA] Hàm nhận diện chuẩn
+        except Exception as e: print(f"❌ Lỗi tải DB: {e}")   
+    # [HÀM ĐÃ SỬA ĐỂ KHẮC PHỤC LỖI NHẬN VƠ]
+    # [HÀM ĐÃ SỬA: CHUẨN HÓA VECTOR ĐỂ ĐIỂM SỐ VỀ 0.0 - 1.0]
     def recognize(self, target_embedding):
-        # 1. Chuẩn hóa vector đầu vào
-        norm = np.linalg.norm(target_embedding)
-        if norm != 0:
-            target_embedding = target_embedding / norm
+        # 1. Chuẩn hóa vector từ Camera
+        norm_target = np.linalg.norm(target_embedding)
+        if norm_target != 0:
+            target_embedding = target_embedding / norm_target
         
         max_score = 0
         identity = "Unknown"
         
-        # 2. So sánh vector
+        # 2. So sánh với Database
         for face in self.known_embeddings:
-            score = np.dot(target_embedding, face["embedding"])
+            db_emb = face["embedding"]
+            
+            # [MỚI] Chuẩn hóa vector từ Database (Dòng này sẽ sửa lỗi điểm 13.xxx)
+            norm_db = np.linalg.norm(db_emb)
+            if norm_db != 0:
+                db_emb = db_emb / norm_db
+            
+            # Tính điểm (Lúc này chắc chắn sẽ ra từ -1 đến 1)
+            score = np.dot(target_embedding, db_emb)
+            
+            # In ra kiểm tra
+            if score > 0.40:
+                print(f" >> So '{face['name']}': {score:.4f}")
+
             if score > max_score:
                 max_score = score
                 identity = face["name"]
         
-        # 3. Chuyển về float python chuẩn
         max_score = float(max_score)
 
-        # 4. Kiểm tra ngưỡng
+        # 3. Kiểm tra ngưỡng (Lúc này 0.60 mới có ý nghĩa)
         if max_score >= SYSTEM_SETTINGS["threshold"]:
             return identity, max_score
             
         return "Unknown", max_score
-
+    
     def get_person_info(self, name):
         for f in self.known_embeddings: 
             if f["name"] == name: return {"dept": f["dept"], "role": f["role"]}
         return {"dept": "Unknown", "role": "Khách"}
+    
+# ... (Đây là phần cuối của class FaceDatabase mà anh vừa sửa)
+#        return {"dept": "Unknown", "role": "Khách"}
+
+# ==============================================================================
+# [QUAN TRỌNG] KHỞI TẠO AI VÀ DATABASE (Dán đoạn này vào dưới class FaceDatabase)
+# ==============================================================================
+print("System: Đang khởi tạo InsightFace...")
+face_app = FaceAnalysis(name='buffalo_l', providers=['CPUExecutionProvider'])
+face_app.prepare(ctx_id=0, det_size=(640, 640))
+
+# Khởi tạo Database sau khi đã có face_app
+db = FaceDatabase()
+# ==============================================================================
+
 
 face_app = FaceAnalysis(name='buffalo_l', providers=['CPUExecutionProvider'])
 face_app.prepare(ctx_id=0, det_size=(640, 640))
@@ -170,64 +212,41 @@ def calculate_iou(boxA, boxB):
     xB = min(boxA[2], boxB[2]); yB = min(boxA[3], boxB[3])
     interArea = max(0, xB - xA) * max(0, yB - yA)
     union = (boxA[2]-boxA[0])*(boxA[3]-boxA[1]) + (boxB[2]-boxB[0])*(boxB[3]-boxB[1]) - interArea
-    return interArea / float(union) if union > 0 else 0
-
-# # --- 4. THREAD CAMERA ---
-# def camera_thread():
-#     global global_frame_0, global_frame_1
-#     cap0 = cv2.VideoCapture(0); cap1 = cv2.VideoCapture(1)
-#     while True:
-#         ret0, frame0 = cap0.read(); ret1, frame1 = cap1.read()
-#         with lock: global_frame_0 = cv2.flip(frame0, 1) if ret0 else None; global_frame_1 = frame1 if ret1 else None
-#         time.sleep(0.03)
-# t = threading.Thread(target=camera_thread); t.daemon = True; t.start()
-
-# --- 4. THREAD CAMERA (ĐÃ NÂNG CẤP LÊN HD) ---
+    return interArea / float(union) if union > 0 else 0# --- 4. THREAD CAMERA (ĐÃ FIX: DÙNG .copy() ĐỂ CỨU NHẬN DIỆN) ---
 def camera_thread():
     global global_frame_0, global_frame_1
     
-    # Mở camera
-    cap0 = cv2.VideoCapture(0)
-    cap1 = cv2.VideoCapture(1)
+    print("System: Đang khởi động camera...")
 
-    # [QUAN TRỌNG] Ép độ phân giải lên HD (1280x720) để hết bị "ô vuông"
-    # Cam 0
-    cap0.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
-    cap0.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
-    # Cam 1 (Nếu có)
-    cap1.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
-    cap1.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
+    # CAM 1: USB CAMERA (Index 1) - Dùng DSHOW
+    cap0 = cv2.VideoCapture(1, cv2.CAP_DSHOW) 
+    # CAM 2: WEBCAM LAPTOP (Index 0)
+    cap1 = cv2.VideoCapture(0) 
+
+    # Cài đặt HD
+    cap0.set(cv2.CAP_PROP_FRAME_WIDTH, 1280); cap0.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
+    cap1.set(cv2.CAP_PROP_FRAME_WIDTH, 1280); cap1.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
 
     while True:
         ret0, frame0 = cap0.read()
         ret1, frame1 = cap1.read()
         
         with lock: 
-            # Lật ảnh (mirror) cho tự nhiên
-            global_frame_0 = cv2.flip(frame0, 1) if ret0 else None
-            global_frame_1 = frame1 if ret1 else None
+            # [SỬA Ở ĐÂY] Thêm .copy() để tạo bản sao sạch cho AI
+            if ret0 and frame0 is not None:
+                global_frame_0 = frame0.copy() 
+            else:
+                global_frame_0 = None
+
+            # Webcam lật ngược
+            if ret1 and frame1 is not None:
+                global_frame_1 = cv2.flip(frame1, 1)
+            else:
+                global_frame_1 = None
             
         time.sleep(0.03)
 
 t = threading.Thread(target=camera_thread); t.daemon = True; t.start()
-
-# --- LOGIC QUẢN LÝ NGƯỜI LẠ ---
-trackers_state = {0: [], 1: []}; RECENT_STRANGERS = []; NEXT_STRANGER_ID = 1; MAX_STRANGER_MEMORY = 50; STRANGER_MATCH_THRESHOLD = 0.60
-
-def get_stranger_identity(embedding):
-    global RECENT_STRANGERS, NEXT_STRANGER_ID
-    max_score = 0; match_idx = -1
-    for i, stranger in enumerate(RECENT_STRANGERS):
-        score = np.dot(embedding, stranger['embedding'])
-        if score > max_score: max_score = score; match_idx = i
-    if max_score > STRANGER_MATCH_THRESHOLD:
-        RECENT_STRANGERS[match_idx]['last_seen'] = time.time(); return RECENT_STRANGERS[match_idx]['id']
-    new_id = NEXT_STRANGER_ID; NEXT_STRANGER_ID += 1
-    if len(RECENT_STRANGERS) >= MAX_STRANGER_MEMORY: RECENT_STRANGERS.pop(0)
-    RECENT_STRANGERS.append({'id': new_id, 'embedding': embedding, 'last_seen': time.time()})
-    return new_id
-
-# --- [MỚI] HÀM CHUYÊN LƯU ẢNH NGƯỜI LẠ ---
 # --- [ĐÃ SỬA] HÀM CHUYÊN LƯU ẢNH NGƯỜI LẠ ---
 def save_stranger_image(name, face_img):
     if face_img is None or face_img.size == 0: 
@@ -291,17 +310,44 @@ def add_log(name, cam_id, score, face_img=None):
     except Exception as e: 
         print(f" >> ❌ Lỗi DB: {e}"); return False
 
-# --- HẾT HÀM ADD_LOG (Dưới dòng này là hàm process_ai_frame luôn) ---
-# --- 6. XỬ LÝ AI ---
+
+# --- LOGIC QUẢN LÝ NGƯỜI LẠ & LOG (DÁN ĐOẠN NÀY VÀO TRƯỚC HÀM process_ai_frame) ---
+
+# --- HÀM XỬ LÝ NGƯỜI LẠ (Dán cái này nằm TRÊN hàm process_ai_frame) ---
+def get_stranger_identity(embedding):
+    global RECENT_STRANGERS, NEXT_STRANGER_ID
+    max_score = 0; match_idx = -1
+    for i, stranger in enumerate(RECENT_STRANGERS):
+        score = np.dot(embedding, stranger['embedding'])
+        if score > max_score: max_score = score; match_idx = i
+    if max_score > STRANGER_MATCH_THRESHOLD:
+        RECENT_STRANGERS[match_idx]['last_seen'] = time.time(); return RECENT_STRANGERS[match_idx]['id']
+    new_id = NEXT_STRANGER_ID; NEXT_STRANGER_ID += 1
+    if len(RECENT_STRANGERS) >= 50: RECENT_STRANGERS.pop(0)
+    RECENT_STRANGERS.append({'id': new_id, 'embedding': embedding, 'last_seen': time.time()})
+    return new_id
+
+
+# def process_ai_frame(frame, cam_id):
+# ...
+# --- HẾT HÀM ADD_LOG (Dưới dòng này là hàm process_ai_frame luôn) ---# --- 6. XỬ LÝ AI (ĐÃ BỎ "TRY...PASS" ĐỂ HIỆN LỖI) ---
 def process_ai_frame(frame, cam_id):
     if frame is None: return create_placeholder_frame()
     display = frame.copy(); h, w, _ = frame.shape
     display = put_text_utf8(display, f"CAM {cam_id+1} LIVE", (20, 30))
+    
     try:
-        faces = face_app.get(frame); curr_trackers = trackers_state[cam_id]; new_trackers = []; used = set()
+        # Nhận diện khuôn mặt
+        faces = face_app.get(frame)
+        
+        curr_trackers = trackers_state[cam_id]; new_trackers = []; used = set()
+        
         for face in faces:
-            bbox = face.bbox.astype(int); emb = face.embedding / np.linalg.norm(face.embedding); name, score = db.recognize(emb)
+            bbox = face.bbox.astype(int); 
+            emb = face.embedding / np.linalg.norm(face.embedding)
+            name, score = db.recognize(emb)
             
+            # --- Logic Tracking (Giữ nguyên như cũ) ---
             best_iou = 0; best_idx = -1
             for i, trk in enumerate(curr_trackers):
                 if i in used: continue
@@ -309,7 +355,9 @@ def process_ai_frame(frame, cam_id):
                 if iou > 0.3 and iou > best_iou: best_iou = iou; best_idx = i
             
             if best_idx >= 0:
-                tracker = curr_trackers[best_idx]; tracker.update({'bbox': bbox, 'last_seen': time.time(), 'current_embedding': emb}); tracker['names'].append(name); tracker['scores'].append(score); used.add(best_idx)
+                tracker = curr_trackers[best_idx]
+                tracker.update({'bbox': bbox, 'last_seen': time.time(), 'current_embedding': emb})
+                tracker['names'].append(name); tracker['scores'].append(score); used.add(best_idx)
                 
                 if time.time() - tracker['start_time'] >= SYSTEM_SETTINGS["scan_duration"]:
                     common_name = Counter(tracker['names']).most_common(1)[0][0]
@@ -317,42 +365,37 @@ def process_ai_frame(frame, cam_id):
                     
                     if common_name == "Unknown":
                         if 'stranger_id' not in tracker: tracker['stranger_id'] = get_stranger_identity(tracker['current_embedding'])
-                        stranger_id = tracker['stranger_id']
-                        common_name = f"Người lạ {stranger_id}"; display_label = f"NGUOI LA {stranger_id}"; color = (0, 0, 255)
+                        common_name = f"Người lạ {tracker['stranger_id']}"; color = (0, 0, 255)
                     else:
                         info = db.get_person_info(common_name)
-                        # [ĐÃ CHỈNH SỬA] Hiển thị phần trăm độ tin cậy
-                        display_label = f"{common_name} ({int(avg_score*100)}%) - {info['role']}"
-                        color = (0, 255, 0)
+                        common_name = f"{common_name} ({int(avg_score*100)}%)"; color = (0, 255, 0)
                     
                     if not tracker['logged']:
-                        # [CẮT ẢNH AN TOÀN] Kiểm tra tọa độ cắt để tránh lỗi ảnh rỗng
+                        # Cắt ảnh
                         x1, y1, x2, y2 = bbox
-                        x1 = max(0, x1 - 20); y1 = max(0, y1 - 20)
-                        x2 = min(w, x2 + 20); y2 = min(h, y2 + 20)
-                        
-                        img = None
-                        if "Người lạ" in common_name:
-                            if x2 > x1 and y2 > y1: # Đảm bảo vùng cắt hợp lệ
-                                img = frame[y1:y2, x1:x2]
-                        
-                        if add_log(common_name, cam_id, avg_score, img): tracker['logged'] = True
+                        x1 = max(0, x1-20); y1 = max(0, y1-20); x2 = min(w, x2+20); y2 = min(h, y2+20)
+                        face_img = frame[y1:y2, x1:x2] if x2>x1 and y2>y1 else None
+                        if add_log(common_name.split('(')[0].strip(), cam_id, avg_score, face_img): tracker['logged'] = True
                     
+                    # Vẽ khung
                     cv2.rectangle(display, (bbox[0],bbox[1]), (bbox[2],bbox[3]), color, 2)
-                    (text_w, text_h), _ = cv2.getTextSize(display_label, cv2.FONT_HERSHEY_SIMPLEX, 0.8, 2)
-                    cv2.rectangle(display, (bbox[0], bbox[1]-35), (bbox[0]+text_w, bbox[1]), color, -1)
-                    put_text_utf8(display, display_label, (bbox[0], bbox[1]-10), (255, 255, 255))
+                    put_text_utf8(display, common_name, (bbox[0], bbox[1]-10), (255, 255, 255))
                 else:
                     elapsed = time.time() - tracker['start_time']
                     cv2.rectangle(display, (bbox[0],bbox[1]), (bbox[2],bbox[3]), (0, 255, 255), 2)
-                    put_text_utf8(display, f"Dang quet... {int(SYSTEM_SETTINGS['scan_duration'] - elapsed)}s", (bbox[0], bbox[1]-10), (0, 255, 255))
+                    put_text_utf8(display, f"Quet... {int(SYSTEM_SETTINGS['scan_duration'] - elapsed)}s", (bbox[0], bbox[1]-10), (0, 255, 255))
+                
                 new_trackers.append(tracker)
             else:
                 new_trackers.append({'bbox': bbox, 'start_time': time.time(), 'last_seen': time.time(), 'names': [name], 'scores': [score], 'logged': False, 'current_embedding': emb})
+        
         trackers_state[cam_id] = [t for t in new_trackers if time.time() - t['last_seen'] < 1.0]
-    except: pass
+        
+    except Exception as e:
+        # [SỬA Ở ĐÂY] In lỗi ra màn hình đen để biết tại sao mất khung
+        print(f"❌ LỖI AI: {e}")
+        
     return display
-
 # --- 7. API ROUTES ---
 
 @app.route('/login', methods=['POST'])
@@ -393,26 +436,62 @@ def get_user_all():
 @app.route('/api/add_employee_with_faces', methods=['POST'])
 def add_employee_with_faces():
     try:
-        ho_ten = request.form.get('ho_ten'); files = request.files.getlist("faces")
-        if not ho_ten or not files: return jsonify({"success": False}), 400
-        conn = get_connection(); cursor = conn.cursor()
-        cursor.execute("INSERT INTO nhan_vien (ho_ten, email, sdt, dia_chi, ten_phong, ten_chuc_vu, trang_thai) VALUES (%s, %s, %s, %s, %s, %s, %s)", 
-                       (ho_ten, request.form.get('email'), request.form.get('sdt'), request.form.get('dia_chi'), request.form.get('ten_phong'), request.form.get('ten_chuc_vu'), 'Dang_Lam'))
+        ho_ten = request.form.get('ho_ten')
+        files = request.files.getlist("faces")
+        
+        if not ho_ten or not files: 
+            return jsonify({"success": False, "message": "Thiếu thông tin"}), 400
+            
+        conn = get_connection()
+        cursor = conn.cursor()
+        
+        # 1. Tạo nhân viên mới
+        cursor.execute(
+            "INSERT INTO nhan_vien (ho_ten, email, sdt, dia_chi, ten_phong, ten_chuc_vu, trang_thai) VALUES (%s, %s, %s, %s, %s, %s, %s)", 
+            (ho_ten, request.form.get('email'), request.form.get('sdt'), request.form.get('dia_chi'), request.form.get('ten_phong'), request.form.get('ten_chuc_vu'), 'Dang_Lam')
+        )
         ma_nv = cursor.lastrowid
         added = 0
-        for i, file in enumerate(files):
-            img = cv2.imdecode(np.frombuffer(file.read(), np.uint8), cv2.IMREAD_COLOR)
+        
+        # 2. Xử lý từng ảnh gửi lên
+        for file in files:
+            # Đọc ảnh từ RAM
+            img_bytes = file.read()
+            img = cv2.imdecode(np.frombuffer(img_bytes, np.uint8), cv2.IMREAD_COLOR)
+            
             if img is None: continue
+            
+            # Tìm khuôn mặt
             faces = face_app.get(img)
             if not faces: continue
-            fname = f"face_{ma_nv}_{int(time.time())}_{i}.txt"
-            with open(os.path.join(ABS_VECTOR_DIR, fname), "w") as f: f.write(json.dumps(faces[0].embedding.tolist()))
-            cursor.execute("INSERT INTO face_embeddings (ma_nv, vector_data) VALUES (%s, %s)", (ma_nv, os.path.join(VECTOR_DIR, fname).replace("\\", "/")))
+            
+            
+            # [QUAN TRỌNG] Chuyển vector thành chuỗi JSON
+            embedding_json = json.dumps(faces[0].embedding.tolist())
+            
+            # [TÙY CHỌN] Lưu cả ảnh khuôn mặt dạng BLOB để backup
+            success, img_encoded = cv2.imencode('.jpg', img)
+            img_blob = img_encoded.tobytes() if success else None
+            
+            # 3. Lưu trực tiếp vào Database (Không lưu file nữa)
+            cursor.execute(
+                "INSERT INTO face_embeddings (ma_nv, vector_data, image_data) VALUES (%s, %s, %s)", 
+                (ma_nv, embedding_json, img_blob)
+            )
             added += 1
-        conn.commit(); cursor.close(); conn.close(); db.reload_db()
-        return jsonify({"success": True, "message": f"Đã thêm {added} khuôn mặt"})
-    except Exception as e: return jsonify({"success": False, "message": str(e)}), 500
-
+            
+        conn.commit()
+        cursor.close()
+        conn.close()
+        
+        # Reload lại dữ liệu vào RAM ngay lập tức
+        db.reload_db()
+        
+        return jsonify({"success": True, "message": f"Đã thêm NV {ho_ten} với {added} khuôn mặt"})
+        
+    except Exception as e:
+        print(f"Lỗi thêm NV: {e}")
+        return jsonify({"success": False, "message": str(e)}), 500
 @app.route('/api/delete_employee', methods=['DELETE'])
 def delete_employee():
     try:

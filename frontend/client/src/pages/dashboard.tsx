@@ -266,24 +266,30 @@ export default function Dashboard() {
                 Cấu hình
               </Button>
             </div>
+
+            {/* --- PHẦN CHỈNH SỬA KẾT NỐI CAMERA --- */}
             <div className="grid gap-4">
               <div className="grid gap-4">
-                <CameraFeed
-                  useWebcam={true}
-                  camId={0}
-                  label="CAM-01: Cổng Soát Vé"
-                  location="Sảnh Chính - Tầng G"
-                />
-
+                {/* CAMERA 1: WEBCAM LAPTOP (Stream từ Python port 5000) */}
                 <CameraFeed
                   useWebcam={false}
-                  src="/assets/generated_images/cctv_server_room.png"
-                  label="CAM-02: Phòng Server"
+                  src="http://localhost:5000/video_feed/0"
+                  label="CAM-01: Webcam Laptop"
+                  location="Sảnh Chính - Tầng G"
+                  status="live"
+                />
+
+                {/* CAMERA 2: USB CAMERA (Stream từ Python port 5000) */}
+                <CameraFeed
+                  useWebcam={false}
+                  src="http://localhost:5000/video_feed/1"
+                  label="CAM-02: Camera USB (DV20)"
                   location="Khu vực hạn chế"
                   status="live"
                 />
               </div>
             </div>
+            {/* --- HẾT PHẦN CHỈNH SỬA --- */}
           </div>
         </div>
 
